@@ -17,7 +17,7 @@ from time import perf_counter
 from ml_genn.utils.data import preprocess_spikes
 
 NUM_INPUT = 3
-NUM_HIDDEN = 256
+NUM_HIDDEN = 3
 NUM_OUTPUT = 3
 IN_GROUP_SIZE = 4
 IN_ACTIVE_ISI = 10
@@ -54,7 +54,7 @@ if SHOW_TARGET:
     plt.show()
 
 # Shift each spike time by group start
-in_spike_times = np.array(pos)*DT-5
+in_spike_times = np.array(pos)*DT-2
 
 # Create matching array of IDs
 in_spike_ids = np.arange(3)
@@ -64,6 +64,8 @@ in_spikes = preprocess_spikes(in_spike_times.flatten(), in_spike_ids, NUM_INPUT)
 
 in_spikes = [in_spikes] * NUM_TRIALS
 y_star = [y_star] * NUM_TRIALS
+
+i2h_weight = [[ 5, 0 ,0 ], [ 0, 5, 0 ], [0, 0, 5]]
 
 network = Network()
 with network:
@@ -77,14 +79,15 @@ with network:
                         NUM_OUTPUT)
     
     # Connections
-    in_hid = Connection(input, hidden, Dense(Normal(mean=4.5 / np.sqrt(NUM_INPUT), sd=1.0 / np.sqrt(NUM_INPUT))), Exponential(TAU_SYN))
+    in_hid = Connection(input, hidden, Dense(i2h_weight), Exponential(TAU_SYN))
     #Connection(hidden, hidden, Dense(Normal(sd=0.5 / np.sqrt(NUM_HIDDEN))), Exponential(TAU_SYN))
     hid_out = Connection(hidden, output, Dense(Normal(sd=1.0 / np.sqrt(NUM_HIDDEN))), Exponential(TAU_SYN))
 
 compiler = EventPropCompiler(example_timesteps=trial_steps, losses="mean_square_error", max_spikes=1500, dt=DT)
-compiled_net = compiler.compile(network, optimisers={in_hid: {"weight": Adam(LR*10)},
+compiled_net = compiler.compile(network, optimisers={in_hid: {"weight": Adam(LR)},
                                                      hid_out: {"weight": Adam(LR)}},
-                                regularisers={"all_hidden_populations": SpikeCount(1e-8, 10)})
+                                #regularisers={"all_hidden_populations": SpikeCount(1e-8, 10)}
+)
 
 with compiled_net:
     def alpha_schedule(epoch, alpha):
@@ -99,7 +102,8 @@ with compiled_net:
                  VarRecorder(output, "v", key="output_v"),
                  SpikeRecorder(input, key="input_spikes"),
                  SpikeRecorder(hidden, key="hidden_spikes"),
-                 OptimiserParamSchedule("alpha", alpha_schedule)]
+                 #OptimiserParamSchedule("alpha", alpha_schedule)
+    ]
     metrics, cb_data  = compiled_net.train({input: in_spikes},
                                            {output: y_star},
                                            num_epochs=NUM_EPOCHS,
@@ -120,15 +124,14 @@ with compiled_net:
             axes[c,i].set_title(f"Y{c} (MSE={mse:.2f})")
             axes[c,i].plot(t,y)
             axes[c,i].plot(t,y_star[0][:,c], linestyle="--")
-        axes[NUM_OUTPUT,i].scatter(cb_data["input_spikes"][0][i],
-                                      cb_data["input_spikes"][1][i], s=1)
-        axes[NUM_OUTPUT + 1,i].scatter(cb_data["hidden_spikes"][0][i],
-                                          cb_data["hidden_spikes"][1][i], s=1)
+        axes[NUM_OUTPUT,i].scatter(cb_data["input_spikes"][0][i*NUM_TRIALS],
+                                      cb_data["input_spikes"][1][i*NUM_TRIALS], s=1)
+        axes[NUM_OUTPUT + 1,i].scatter(cb_data["hidden_spikes"][0][i*NUM_TRIALS],
+                                          cb_data["hidden_spikes"][1][i*NUM_TRIALS], s=1)
         
         error = np.hstack(error)
         total_mse = np.sum(error * error) / len(error)
         print(f"{i}: Total MSE: {total_mse}")
-    axes[0,0].set_ylabel("Input spikes")
-    axes[0,1].set_ylabel("Y")
-    axes[0,2].set_ylabel("E")
+    axes[NUM_OUTPUT,0].set_ylabel("Input spikes")
+    axes[NUM_OUTPUT+1,0].set_ylabel("Hidden spikes")
     plt.show()
