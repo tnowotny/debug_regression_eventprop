@@ -21,11 +21,11 @@ NUM_OUTPUT = 3
 IN_GROUP_SIZE = 4
 IN_ACTIVE_ISI = 10
 IN_ACTIVE_INTERVAL = 200
-NUM_TRIALS = 100
-NUM_EPOCHS = 10
+NUM_TRIALS = 300
+NUM_EPOCHS = 15
 TAU_MEM = 20.0
 TAU_SYN = 5.0
-LR = 0.016
+LR = 0.001
 TRIAL_TIME = 1000
 SHOW_TARGET = True
 DT = 0.1
@@ -64,7 +64,8 @@ in_spikes = preprocess_spikes(in_spike_times.flatten(), in_spike_ids, NUM_INPUT)
 in_spikes = [in_spikes] * NUM_TRIALS
 y_star = [y_star] * NUM_TRIALS
 
-i2h_weight = [[ 5, 0 ,0 ], [ 0, 5, 0 ], [0, 0, 5]]
+i2h_weight = [[ 5.5, 0 ,0 ], [ 0, 5, 0 ], [0, 0, 5]]
+h2o_weight = [[ 5, 0 ,0 ], [ 0, -5, 0 ], [0, 0, 5]]
 
 network = Network(default_params)
 with network:
@@ -79,24 +80,27 @@ with network:
     # Connections
     in_hid = Connection(input, hidden, Dense(i2h_weight), Exponential(TAU_SYN))
     #Connection(hidden, hidden, Dense(Normal(sd=0.5 / np.sqrt(NUM_HIDDEN))), Exponential(TAU_SYN))
-    hid_out = Connection(hidden, output, Dense(Normal(sd=1.0 / np.sqrt(NUM_HIDDEN))), Exponential(TAU_SYN))
+    hid_out = Connection(hidden, output, Dense(h2o_weight), Exponential(TAU_SYN))
 
-compiler = EventPropCompiler(example_timesteps=trial_steps, losses="mean_square_error", max_spikes=1500, dt=DT, optimiser= Adam(LR))
+compiler = EventPropCompiler(example_timesteps=trial_steps, losses="mean_square_error", max_spikes=1500, dt=DT, optimiser= Adam(LR),batch_size=1)
 compiled_net = compiler.compile(network, 
                                 #regularisers={"all_hidden_populations": SpikeCount(1e-8, 10)}
 )
 
 with compiled_net:
-    def alpha_schedule(epoch, alpha):
-        if (epoch % 2) == 0 and epoch != 0:
-            return alpha * 0.7
-        else:
-            return alpha
+    #def alpha_schedule(epoch, alpha):
+    #    if (epoch % 2) == 0 and epoch != 0:
+    #        return alpha * 0.7
+    #    else:
+    #        return alpha
 
     # Evaluate model on numpy dataset
     start_time = perf_counter()
     callbacks = ["batch_progress_bar", 
                  VarRecorder(output, "v", key="output_v"),
+                 VarRecorder(hidden, genn_var="LambdaV", key="lambda_vh"),
+                 VarRecorder(output, genn_var="LambdaI", key="lambda_io"),
+                 VarRecorder(output, genn_var="LambdaV", key="lambda_vo"),
                  SpikeRecorder(input, key="input_spikes"),
                  SpikeRecorder(hidden, key="hidden_spikes"),
                  #OptimiserParamSchedule("alpha", alpha_schedule)
@@ -109,23 +113,31 @@ with compiled_net:
     print(f"Time = {end_time - start_time}s")
 
     #
-    fig, axes = plt.subplots(NUM_OUTPUT + 2, NUM_EPOCHS, sharex=True, sharey="row")
+    report_trials = [ 120, 121, 122, 123, 124, 125, 5*NUM_TRIALS ]
+    report_trials = base + np.asarray(report_trials)
+    plotcols = len(report_trials)
+    fig, axes = plt.subplots(NUM_OUTPUT + 4, plotcols, sharex=True, sharey="row")
     t = np.arange(trial_steps)*DT
-    for i in range(NUM_EPOCHS):
+    base = 7*NUM_TRIALS
+    for i in range(plotcols):
         error = []
         for c in range(NUM_OUTPUT):
-            y = cb_data["output_v"][i*NUM_TRIALS][:,c]
-            print(y.shape)
+            y = cb_data["output_v"][report_trials[i]][:,c]
             error.append(y - y_star[0][:,c])
             mse = np.sum(error[-1][50:trial_steps] * error[-1][50:trial_steps]) / len(error[-1][50:trial_steps])
             axes[c,i].set_title(f"Y{c} (MSE={mse:.2f})")
             axes[c,i].plot(t,y)
             axes[c,i].plot(t,y_star[0][:,c], linestyle="--")
-        axes[NUM_OUTPUT,i].scatter(cb_data["input_spikes"][0][i*NUM_TRIALS],
-                                      cb_data["input_spikes"][1][i*NUM_TRIALS], s=1)
-        axes[NUM_OUTPUT + 1,i].scatter(cb_data["hidden_spikes"][0][i*NUM_TRIALS],
-                                          cb_data["hidden_spikes"][1][i*NUM_TRIALS], s=1)
+            axes[c,i].set_title(f"trial {report_trials[i]}")
+        axes[NUM_OUTPUT,i].scatter(cb_data["input_spikes"][0][report_trials[i]],
+                                      cb_data["input_spikes"][1][report_trials[i]], s=1)
+        axes[NUM_OUTPUT + 1,i].scatter(cb_data["hidden_spikes"][0][report_trials[i]],
+                                          cb_data["hidden_spikes"][1][report_trials[i]], s=1)
+        axes[NUM_OUTPUT + 2,i].plot(TRIAL_TIME-t,cb_data["lambda_vh"][report_trials[i]][:,c])
         
+        axes[NUM_OUTPUT + 3,i].plot(TRIAL_TIME-t,cb_data["lambda_io"][report_trials[i]][:,c])
+        
+        axes[NUM_OUTPUT + 3,i].plot(TRIAL_TIME-t,cb_data["lambda_vo"][report_trials[i]][:,c])
         error = np.hstack(error)
         total_mse = np.sum(error * error) / len(error)
         print(f"{i}: Total MSE: {total_mse}")
